@@ -19,4 +19,4 @@ def send_email(to_email: str, subject: str, body: str) -> None:
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.send_message(msg)
 
-    print("Email sent successfully.")
+    print("\nEmail sent successfully.")
