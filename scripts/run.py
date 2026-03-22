@@ -1,11 +1,11 @@
-from app.workflows.email_workflow import run_email_workflow
+from app.agents.email_agents import run_agent
 
 
-def main() -> None:
-    run_email_workflow(
+def main():
+    run_agent(
         user_name="Atharva",
         to_email="atharva.patade@outlook.com",
-        event="follow_up"
+        event="user inactive for 30 days"
     )
 
 
