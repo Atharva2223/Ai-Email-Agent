@@ -10,42 +10,50 @@ import re
 def _get_client():
     return genai.Client(api_key=GEMINI_API_KEY)
 
+def parse_ai_decision(response_text: str) -> dict:
+    import re
+    import json
 
-def decide_email_action(event: str) -> dict:
-    """
-    AI decides what action to take based on event.
-    Returns structured decision.
-    """
+    try:
+        match = re.search(r"\{.*\}", response_text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        raise ValueError("No JSON found")
+
+    except Exception:
+        print("⚠️ Failed to parse AI response:")
+        print(response_text)
+        return {
+            "tool": "skip",
+            "purpose": "none"
+        }
+def decide_email_action(event: str) -> str:
     client = _get_client()
 
-   
     prompt = f"""
-You are an AI email assistant.
+    You are an AI email automation agent.
 
-Based on the event below, decide:
-1. Whether an email should be sent
-2. The purpose of the email (if needed)
+    Based on the event below, decide:
+    1. Which action (tool) to use
+    2. The purpose (if needed)
 
-Event: {event}
+    Available tools:
+    - "generate_and_send_email"
+    - "skip"
 
-Rules:
-- If no email is needed, return:
-  {{
-    "send_email": false,
-    "purpose": "none"
-  }}
+    Event: {event}
 
-- If email is needed, return:
-  {{
-    "send_email": true,
-    "purpose": "clear description of email purpose"
-  }}
+    Rules:
+    - If email is needed → use "generate_and_send_email"
+    - If no action needed → use "skip"
 
-STRICT:
-- Return ONLY valid JSON
-- No explanation
-- No markdown
-"""
+    Output ONLY valid JSON:
+    {{
+        "tool": "generate_and_send_email" or "skip",
+        "purpose": "..."
+    }}
+    """
+
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
@@ -54,25 +62,6 @@ STRICT:
     return response.text
 
 
-def parse_ai_decision(response_text: str) -> dict:
-    
-
-    try:
-        # Extract JSON using regex
-        match = re.search(r"\{.*\}", response_text, re.DOTALL)
-        if match:
-            json_text = match.group(0)
-            return json.loads(json_text)
-
-        raise ValueError("No JSON found")
-
-    except Exception:
-        print("⚠️ Failed to parse AI response:")
-        print(response_text)
-        return {
-            "send_email": False,
-            "purpose": "Invalid response"
-        }
 def run_agent(user_name: str, to_email: str, event: str):
     raw_response = decide_email_action(event)
 
@@ -83,21 +72,26 @@ def run_agent(user_name: str, to_email: str, event: str):
 
     print("\nAI Decision:", decision)
 
-    send_flag = decision.get("send_email", False)
+    tool = decision.get("tool", "skip")
     purpose = decision.get("purpose", "").strip()
 
-    # 🚫 Case 1: AI says do NOT send
-    if not send_flag:
-        print("Agent decision: No email needed.")
+    # 🧰 TOOL: SKIP
+    if tool == "skip":
+        print("🛑 Agent chose to skip email.")
         return
 
-    # 🚫 Case 2: Invalid purpose
-    if not purpose or purpose.lower() in ["n/a", "none", "no email"]:
-        print("Invalid purpose returned by AI. Skipping email.")
+    # 🧰 TOOL: GENERATE + SEND
+    if tool == "generate_and_send_email":
+
+        if not purpose or purpose.lower() in ["none", "n/a"]:
+            print("⚠️ Invalid purpose. Skipping.")
+            return
+
+        subject = generate_subject(purpose)
+        body = generate_email(user_name, purpose)
+
+        send_email(to_email, subject, body)
         return
 
-    # ✅ Normal flow
-    subject = generate_subject(purpose)
-    body = generate_email(user_name, purpose)
-
-    send_email(to_email, subject, body)
+    # 🚫 Unknown tool
+    print(f"⚠️ Unknown tool: {tool}")

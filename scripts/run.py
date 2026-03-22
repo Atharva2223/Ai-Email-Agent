@@ -5,7 +5,7 @@ def main():
     run_agent(
         user_name="Atharva",
         to_email="atharva.patade@outlook.com",
-        event="user inactive for 30 days"
+        event="user active daily"
     )
 
 
