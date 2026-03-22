@@ -5,7 +5,7 @@ def main():
     run_agent(
         user_name="Atharva",
         to_email="atharva.patade@outlook.com",
-        event="user active daily"
+        input_text = "Can we schedule a meeting tomorrow at 3pm?",
     )
 
 
