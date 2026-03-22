@@ -9,7 +9,11 @@ from app.services.calendar_service import (
     create_meeting_event,
     extract_meeting_link,
 )
-
+from app.services.memory_service import (
+    get_user_memory,
+    update_user_memory,
+    append_interaction,
+)
 import json
 import re
 
@@ -18,13 +22,19 @@ def _get_client():
     return genai.Client(api_key=GEMINI_API_KEY)
 
 
-def decide_email_action(input_text: str) -> str:
+def decide_email_action(input_text: str, user_memory: dict) -> str:
     client = _get_client()
 
     prompt = f"""
 You are an intelligent email assistant.
 
-Analyze the input and decide the best action.
+Use the current user input and stored memory to decide the best action.
+
+User Input:
+{input_text}
+
+Stored Memory:
+{user_memory}
 
 Possible actions:
 - "reply_email"
@@ -32,12 +42,6 @@ Possible actions:
 - "send_email"
 - "ignore"
 - "ask_user"
-
-Rules:
-- Use "schedule_meeting" only if the user clearly wants a meeting.
-- Use "ask_user" if meeting details are missing or unclear.
-- Use "reply_email" for normal response emails.
-- Use "ignore" only if no response or action is needed.
 
 Return ONLY valid JSON.
 
@@ -53,9 +57,6 @@ Schema:
     "message": "clarification question if needed"
   }}
 }}
-
-Input:
-{input_text}
 """
 
     response = client.models.generate_content(
@@ -64,7 +65,6 @@ Input:
     )
 
     return response.text
-
 
 def parse_ai_decision(response_text: str) -> dict:
     try:
@@ -90,7 +90,12 @@ def parse_ai_decision(response_text: str) -> dict:
 
 
 def run_agent(user_name: str, to_email: str, input_text: str):
-    raw_response = decide_email_action(input_text)
+    user_memory = get_user_memory(to_email)
+
+    print("\nUSER MEMORY:")
+    print(user_memory)
+
+    raw_response = decide_email_action(input_text, user_memory)
 
     print("\nRAW AI RESPONSE:")
     print(raw_response)
@@ -105,6 +110,7 @@ def run_agent(user_name: str, to_email: str, input_text: str):
 
     print(f"\nChosen action: {action}")
     print(f"Details: {details}")
+    
 
     if action == "ignore":
         print("Agent decided no action is needed.")
@@ -118,6 +124,21 @@ def run_agent(user_name: str, to_email: str, input_text: str):
         subject = "Need clarification"
         send_email(to_email, subject, clarification_message)
         print("Clarification email sent.")
+        update_user_memory(
+            to_email,
+            {
+                "last_action": "ask_user",
+            },
+        )
+
+        append_interaction(
+            to_email,
+            {
+                "input": input_text,
+                "action": "ask_user",
+                "details": details,
+            },
+        )
         return
 
     if action == "reply_email":
@@ -126,6 +147,22 @@ def run_agent(user_name: str, to_email: str, input_text: str):
         body = generate_email(user_name, purpose)
         send_email(to_email, subject, body)
         print("Reply email sent.")
+        update_user_memory(
+            to_email,
+            {
+                "last_action": "reply_email",
+                "last_topic": details.get("purpose", "Reply to user email"),
+            },
+        )
+
+        append_interaction(
+            to_email,
+            {
+                "input": input_text,
+                "action": "reply_email",
+                "details": details,
+            },
+        )
         return
 
     if action == "send_email":
@@ -134,6 +171,22 @@ def run_agent(user_name: str, to_email: str, input_text: str):
         body = generate_email(user_name, purpose)
         send_email(to_email, subject, body)
         print("Outbound email sent.")
+        update_user_memory(
+            to_email,
+            {
+                "last_action": "send_email",
+                "last_topic": details.get("purpose", "General outbound email"),
+            },
+        )
+
+        append_interaction(
+            to_email,
+            {
+                "input": input_text,
+                "action": "send_email",
+                "details": details,
+            },
+        )
         return
 
     if action == "schedule_meeting":
@@ -194,6 +247,46 @@ def run_agent(user_name: str, to_email: str, input_text: str):
 
         send_email(to_email, subject, body)
         print("Meeting created and confirmation email sent.")
+        update_user_memory(
+            to_email,
+            {
+                "last_action": "schedule_meeting",
+                "last_topic": details.get("purpose", "Meeting"),
+                "last_meeting_date": start_dt.strftime("%Y-%m-%d"),
+                "last_meeting_time": start_dt.strftime("%I:%M %p"),
+                "preferred_meeting_time": start_dt.strftime("%I:%M %p"),
+            },
+        )
+
+        append_interaction(
+            to_email,
+            {
+                "input": input_text,
+                "action": "schedule_meeting",
+                "details": details,
+                "meeting_link": meeting_link,
+            },
+        ) 
+        update_user_memory(
+            to_email,
+            {
+                "last_action": "schedule_meeting",
+                "last_topic": details.get("purpose", "Meeting"),
+                "last_meeting_date": start_dt.strftime("%Y-%m-%d"),
+                "last_meeting_time": start_dt.strftime("%I:%M %p"),
+                "preferred_meeting_time": start_dt.strftime("%I:%M %p"),
+            },
+        )
+
+        append_interaction(
+            to_email,
+            {
+                "input": input_text,
+                "action": "schedule_meeting",
+                "details": details,
+                "meeting_link": meeting_link,
+            },
+        )
         return
 
     print("Unknown action received from agent.")
