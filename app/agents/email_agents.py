@@ -26,9 +26,16 @@ def decide_email_action(input_text: str, user_memory: dict) -> str:
     client = _get_client()
 
     prompt = f"""
-You are an intelligent email assistant.
+You are an autonomous email assistant.
 
-Use the current user input and stored memory to decide the best action.
+You are responsible for handling incoming emails on behalf of the user.
+You are communicating with the email sender directly, not with the developer or system operator.
+
+Your job is to:
+1. Understand the sender's intent from the email
+2. Use stored memory if it is relevant
+3. Choose the best action
+4. If information is missing, ask the sender directly in a polite and professional way
 
 User Input:
 {input_text}
@@ -37,13 +44,23 @@ Stored Memory:
 {user_memory}
 
 Possible actions:
-- "reply_email"
-- "schedule_meeting"
-- "send_email"
-- "ignore"
-- "ask_user"
+- "reply_email" -> use when the sender needs a normal reply
+- "schedule_meeting" -> use when the sender clearly wants to schedule a meeting
+- "send_email" -> use for proactive outbound emails
+- "ignore" -> use only when no reply or action is needed
+- "ask_user" -> use when required information is missing or unclear
 
-Return ONLY valid JSON.
+Important rules:
+- NEVER ask the developer what to do
+- NEVER say things like "Would you like me to ask the sender?"
+- ALWAYS act as if you are replying directly to the sender
+- If details are missing, choose "ask_user"
+- The "message" field must contain the exact clarification email text to send to the sender
+- Be concise, professional, and business-appropriate
+- Return ONLY valid JSON
+- Do NOT include markdown
+- Do NOT include backticks
+- Do NOT include explanations outside JSON
 
 Schema:
 {{
@@ -54,7 +71,7 @@ Schema:
     "date": "meeting date if available",
     "time": "meeting time if available",
     "duration_minutes": 30,
-    "message": "clarification question if needed"
+    "message": "full sender-facing clarification or reply message if needed"
   }}
 }}
 """
