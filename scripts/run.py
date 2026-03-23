@@ -3,9 +3,12 @@ from app.agents.email_agents import run_agent
 
 def main():
     run_agent(
-        user_name="Atharva",
-        to_email="atharva.patade@outlook.com",
-        input_text = "Can we do the same time again next week?",
+        email_context = f"""
+        From: {sender}
+        Subject: {subject}
+        Body:
+        {body}
+        """
     )
 
 
