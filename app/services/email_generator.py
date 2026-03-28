@@ -38,20 +38,24 @@ def generate_email(user_name: str, purpose: str) -> str:
     Generate a professional email body.
     """
     client = _get_client()
-
     prompt = f"""
     Write a professional email for {user_name}.
 
     Purpose:
     {purpose}
 
-    Rules:
-    - Keep it under 150 words
-    - Use a polite and professional tone
-    - Include a greeting
-    - Include a clear call to action
+    Requirements:
+    - Use a proper greeting
+    - Use short paragraphs
+    - Leave a blank line between paragraphs
+    - If needed, use bullet points
+    - Include a professional closing
+    - Do NOT write everything in one paragraph
+    - Keep the tone clear, polite, and professional
     - Output only the email body
     """
+
+    
 
     response = client.models.generate_content(
         model="gemini-2.5-flash",

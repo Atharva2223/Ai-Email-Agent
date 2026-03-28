@@ -1,11 +1,13 @@
 from __future__ import annotations
 import base64
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from email.mime.text import MIMEText
 
 
@@ -52,19 +54,27 @@ def list_unread_messages(max_results: int = 10) -> List[Dict[str, Any]]:
     Return unread inbox messages.
     """
     service = _get_gmail_service()
-
-    response = (
-        service.users()
-        .messages()
-        .list(
-            userId="me",
-            q="is:unread in:inbox",
-            maxResults=max_results,
-        )
-        .execute()
-    )
-
-    return response.get("messages", [])
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = (
+                service.users()
+                .messages()
+                .list(
+                    userId="me",
+                    q="is:unread in:inbox",
+                    maxResults=max_results,
+                )
+                .execute()
+            )
+            return response.get("messages", [])
+        except HttpError as e:
+            if e.resp.status >= 500 and attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"Server error ({e.resp.status}), retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                raise
 
 
 def get_message(message_id: str) -> Dict[str, Any]:
@@ -72,13 +82,22 @@ def get_message(message_id: str) -> Dict[str, Any]:
     Fetch a full Gmail message by ID.
     """
     service = _get_gmail_service()
-
-    return (
-        service.users()
-        .messages()
-        .get(userId="me", id=message_id, format="full")
-        .execute()
-    )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return (
+                service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="full")
+                .execute()
+            )
+        except HttpError as e:
+            if e.resp.status >= 500 and attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff
+                print(f"Server error ({e.resp.status}), retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                raise
 
 
 def _extract_header(headers: List[Dict[str, str]], name: str) -> str:
