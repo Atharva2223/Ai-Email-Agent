@@ -3,6 +3,10 @@ from app.core.config import GEMINI_API_KEY
 from app.services.email_generator import generate_email, generate_subject
 from app.services.email_sender import send_email
 from datetime import timedelta
+from app.services.reasoning_service import analyze_email_step_by_step
+from app.services.approval_service import create_approval_request
+import json
+import re
 from app.services.calendar_service import (
     _parse_datetime,
     check_availability,
@@ -14,8 +18,7 @@ from app.services.memory_service import (
     update_user_memory,
     append_interaction,
 )
-import json
-import re
+
 
 
 def _get_client():
@@ -83,7 +86,38 @@ Schema:
 
     return response.text
 
-def parse_ai_decision(response_text: str) -> dict:
+
+
+def requires_approval(reasoning_result: dict) -> bool:
+    risk = reasoning_result.get("risk_assessment", {})
+    decision = reasoning_result.get("decision", {})
+
+    if risk.get("is_sensitive", False):
+        return True
+
+    action = decision.get("action", "")
+    purpose = decision.get("purpose", "").lower()
+    message = decision.get("message", "").lower()
+
+    sensitive_keywords = [
+        "quotation",
+        "quote",
+        "pricing",
+        "contract",
+        "legal",
+        "invoice",
+        "payment",
+        "discount",
+        "delivery timeline",
+        "commitment",
+    ]
+
+    if action in {"send_email", "reply_email"}:
+        if any(keyword in purpose or keyword in message for keyword in sensitive_keywords):
+            return True
+
+    return False
+def parse_ai_json(response_text: str) -> dict:
     try:
         match = re.search(r"\{.*\}", response_text, re.DOTALL)
         if match:
@@ -93,137 +127,90 @@ def parse_ai_decision(response_text: str) -> dict:
         print("Failed to parse AI response:")
         print(response_text)
         return {
-            "action": "ask_user",
-            "reason": "Invalid model output",
-            "details": {
-                "purpose": "",
-                "date": "",
-                "time": "",
-                "duration_minutes": 30,
-                "message": "Could you clarify the meeting date and time?",
+            "intent": "unknown",
+            "facts": {},
+            "risk_assessment": {
+                "is_sensitive": True,
+                "reason": "Invalid model output"
             },
+            "decision": {
+                "action": "needs_approval",
+                "purpose": "Manual review required",
+                "message": "Unable to safely process this email automatically.",
+                "duration_minutes": 30
+            }
         }
-
-
-
 def run_agent(user_name: str, to_email: str, input_text: str):
     user_memory = get_user_memory(to_email)
 
     print("\nUSER MEMORY:")
     print(user_memory)
 
-    raw_response = decide_email_action(input_text, user_memory)
+    raw_reasoning = analyze_email_step_by_step(input_text, user_memory)
 
-    print("\nRAW AI RESPONSE:")
-    print(raw_response)
+    print("\nRAW REASONING RESPONSE:")
+    print(raw_reasoning)
 
-    decision = parse_ai_decision(raw_response)
-
-    print("\nAI Decision:")
-    print(decision)
-
-    action = decision.get("action", "ask_user")
-    details = decision.get("details", {})
-
-    print(f"\nChosen action: {action}")
-    print(f"Details: {details}")
     
+    reasoning_result = parse_ai_json(raw_reasoning)
+
+    print("\nREASONING RESULT:")
+    print(reasoning_result)
+
+    decision = reasoning_result.get("decision", {})
+    action = decision.get("action", "needs_approval")
+    purpose = decision.get("purpose", "")
+    message = decision.get("message", "")
+    duration_raw = decision.get("duration_minutes") or 30
+
+    try:
+        duration_minutes = int(duration_raw)
+    except Exception:
+        duration_minutes = 30
+
+    if requires_approval(reasoning_result):
+        approval_id = create_approval_request(
+            {
+                "to_email": to_email,
+                "input_text": input_text,
+                "reasoning_result": reasoning_result,
+                "proposed_action": action,
+                "proposed_purpose": purpose,
+                "proposed_message": message,
+            }
+        )
+
+        print(f"Approval required. Request created with ID: {approval_id}")
+        return
 
     if action == "ignore":
         print("Agent decided no action is needed.")
         return
 
     if action == "ask_user":
-        clarification_message = details.get(
-            "message",
-            "Could you clarify what you would like me to do?",
-        )
-        subject = "Need clarification"
-        send_email(to_email, subject, clarification_message)
+        clarification_message = message or "Could you please provide the missing details so I can proceed?"
+        send_email(to_email, "Clarification Required", clarification_message)
         print("Clarification email sent.")
-        update_user_memory(
-            to_email,
-            {
-                "last_action": "ask_user",
-            },
-        )
-
-        append_interaction(
-            to_email,
-            {
-                "input": input_text,
-                "action": "ask_user",
-                "details": details,
-            },
-        )
         return
 
     if action == "reply_email":
-        purpose = details.get("purpose", "Reply to user email")
-        subject = generate_subject(purpose)
-        body = generate_email(user_name, purpose)
+        subject = generate_subject(purpose or "Reply to email")
+        body = message or generate_email(user_name, purpose or "Reply to email")
         send_email(to_email, subject, body)
         print("Reply email sent.")
-        update_user_memory(
-            to_email,
-            {
-                "last_action": "reply_email",
-                "last_topic": details.get("purpose", "Reply to user email"),
-            },
-        )
-
-        append_interaction(
-            to_email,
-            {
-                "input": input_text,
-                "action": "reply_email",
-                "details": details,
-            },
-        )
-        return
-
-    if action == "send_email":
-        purpose = details.get("purpose", "General outbound email")
-        subject = generate_subject(purpose)
-        body = generate_email(user_name, purpose)
-        send_email(to_email, subject, body)
-        print("Outbound email sent.")
-        update_user_memory(
-            to_email,
-            {
-                "last_action": "send_email",
-                "last_topic": details.get("purpose", "General outbound email"),
-            },
-        )
-
-        append_interaction(
-            to_email,
-            {
-                "input": input_text,
-                "action": "send_email",
-                "details": details,
-            },
-        )
         return
 
     if action == "schedule_meeting":
-        meeting_date = details.get("date", "").strip()
-        meeting_time = details.get("time", "").strip()
-        duration_raw = details.get("duration_minutes")
-        if duration_raw is None:
-            duration_minutes = 30
-        else:
-            try:
-                duration_minutes = int(duration_raw)
-            except Exception:
-                duration_minutes = 30
+        meeting_date = reasoning_result.get("facts", {}).get("date", "")
+        meeting_time = reasoning_result.get("facts", {}).get("time", "")
 
         if not meeting_date or not meeting_time:
-            clarification = (
-                "I can set up the meeting, but I need both a date and time."
+            send_email(
+                to_email,
+                "Need meeting details",
+                "Could you please confirm the preferred date and time for the meeting?"
             )
-            send_email(to_email, "Need meeting details", clarification)
-            print("Asked user for missing meeting details.")
+            print("Meeting clarification email sent.")
             return
 
         start_dt = _parse_datetime(meeting_date, meeting_time)
@@ -232,16 +219,16 @@ def run_agent(user_name: str, to_email: str, input_text: str):
         is_free = check_availability(start_dt, end_dt)
 
         if not is_free:
-            alternate_message = (
-                f"I’m unavailable at {start_dt.strftime('%Y-%m-%d %I:%M %p')}. "
-                "Please suggest another time."
+            send_email(
+                to_email,
+                "Meeting time unavailable",
+                f"I’m unavailable at {start_dt.strftime('%Y-%m-%d %I:%M %p')}. Please suggest another time."
             )
-            send_email(to_email, "Meeting time unavailable", alternate_message)
             print("Requested alternate meeting time.")
             return
 
         event = create_meeting_event(
-            summary="Meeting with user",
+            summary=purpose or "Meeting",
             start_dt=start_dt,
             end_dt=end_dt,
             attendee_email=to_email,
@@ -250,7 +237,6 @@ def run_agent(user_name: str, to_email: str, input_text: str):
 
         meeting_link = extract_meeting_link(event)
 
-        subject = "Meeting Confirmation"
         body = (
             f"Hi,\n\n"
             f"Your meeting has been scheduled.\n\n"
@@ -262,48 +248,25 @@ def run_agent(user_name: str, to_email: str, input_text: str):
             f"AI Assistant"
         )
 
-        send_email(to_email, subject, body)
+        send_email(to_email, "Meeting Confirmation", body)
         print("Meeting created and confirmation email sent.")
-        update_user_memory(
-            to_email,
-            {
-                "last_action": "schedule_meeting",
-                "last_topic": details.get("purpose", "Meeting"),
-                "last_meeting_date": start_dt.strftime("%Y-%m-%d"),
-                "last_meeting_time": start_dt.strftime("%I:%M %p"),
-                "preferred_meeting_time": start_dt.strftime("%I:%M %p"),
-            },
-        )
-
-        append_interaction(
-            to_email,
-            {
-                "input": input_text,
-                "action": "schedule_meeting",
-                "details": details,
-                "meeting_link": meeting_link,
-            },
-        ) 
-        update_user_memory(
-            to_email,
-            {
-                "last_action": "schedule_meeting",
-                "last_topic": details.get("purpose", "Meeting"),
-                "last_meeting_date": start_dt.strftime("%Y-%m-%d"),
-                "last_meeting_time": start_dt.strftime("%I:%M %p"),
-                "preferred_meeting_time": start_dt.strftime("%I:%M %p"),
-            },
-        )
-
-        append_interaction(
-            to_email,
-            {
-                "input": input_text,
-                "action": "schedule_meeting",
-                "details": details,
-                "meeting_link": meeting_link,
-            },
-        )
         return
 
-    print("Unknown action received from agent.")
+    if action == "send_email":
+        subject = generate_subject(purpose or "Outbound email")
+        body = message or generate_email(user_name, purpose or "Outbound email")
+        send_email(to_email, subject, body)
+        print("Outbound email sent.")
+        return
+
+    approval_id = create_approval_request(
+        {
+            "to_email": to_email,
+            "input_text": input_text,
+            "reasoning_result": reasoning_result,
+            "proposed_action": action,
+            "proposed_purpose": purpose,
+            "proposed_message": message,
+        }
+    )
+    print(f"Fallback approval required. Request created with ID: {approval_id}")
